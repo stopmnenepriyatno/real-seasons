@@ -27,6 +27,7 @@ public final class RegressionTests {
         seasonalNightBoundaries();
         dateFile();
         verifiedGameHooks();
+        languageInitializationHook();
         System.out.println("PASS: " + checks + " regression checks (calendar, nightfall, isolation, date file, BTA bytecode contracts).");
         System.out.println("These checks do not launch Minecraft or apply Mixins; in-game validation remains required.");
     }
@@ -225,6 +226,38 @@ public final class RegressionTests {
             if (key.equals(a.values.get(i))) return a.values.get(i + 1);
         }
         return null;
+    }
+
+    private static void languageInitializationHook() throws Exception {
+        ClassNode mixin = node("dev/realseasons/mixin/client/LanguageMixin");
+        AnnotationNode target = annotations(mixin.visibleAnnotations, mixin.invisibleAnnotations).stream()
+                .filter(a -> a.desc.equals("Lorg/spongepowered/asm/mixin/Mixin;")).findFirst().orElseThrow();
+        Type type = (Type) ((List<?>) value(target, "value")).get(0);
+        check(type.getInternalName().equals("net/minecraft/core/lang/Language$Default"),
+                "Translations must target Default, which clears superclass entries");
+        ClassNode game = node(type.getInternalName());
+        MethodNode constructor = game.methods.stream().filter(m -> m.name.equals("<init>")
+                && m.desc.equals("()V")).findFirst().orElseThrow();
+        boolean clearsEntries = false;
+        for (AbstractInsnNode insn : constructor.instructions) {
+            if (insn instanceof MethodInsnNode call && call.owner.equals("java/util/Properties")
+                    && call.name.equals("clear")) clearsEntries = true;
+        }
+        check(clearsEntries, "Verified BTA Default constructor clears translations");
+        MethodNode handler = mixin.methods.stream().filter(m -> m.name.equals("realSeasons$addNames"))
+                .findFirst().orElseThrow();
+        AnnotationNode injection = annotations(handler.visibleAnnotations, handler.invisibleAnnotations).stream()
+                .filter(a -> a.desc.equals("Lorg/spongepowered/asm/mixin/injection/Inject;"))
+                .findFirst().orElseThrow();
+        check(value(injection, "method").equals(List.of("<init>()V")), "Hook exact Default constructor");
+        AnnotationNode at = (AnnotationNode) ((List<?>) value(injection, "at")).get(0);
+        check(value(at, "value").equals("RETURN"), "Add translations after native initialization");
+        Set<Object> constants = new HashSet<>();
+        for (AbstractInsnNode insn : handler.instructions) {
+            if (insn instanceof LdcInsnNode constant) constants.add(constant.cst);
+        }
+        check(constants.containsAll(Set.of("worldType.realseasons.name", "worldType.realseasons.desc", "Real Seasons")),
+                "Supply exact world-selector keys and requested plural name");
     }
 
     private static void verifiedGameHooks() throws Exception {

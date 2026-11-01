@@ -45,7 +45,8 @@ Use a disposable BTA **8.0.1** instance and back up all saves. Install the main 
 ### 1. Startup and selection
 
 - [ ] Start with compatible Loader and Real Seasons only. No Mixin errors in the game log.
-- [ ] World type list includes **Real Seasons** with its description.
+- [ ] World type list includes **Real Seasons** with its description in the default English language and after switching languages; neither label shows a raw translation key.
+- [ ] Mod manager shows the supplied logo, version matching `mod_version`, and the short mod description.
 - [ ] Standard extended/default, flat, winter and other original types remain available.
 - [ ] The default selection has not changed to Real Seasons.
 

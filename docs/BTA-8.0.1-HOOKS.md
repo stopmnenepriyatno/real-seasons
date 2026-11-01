@@ -109,7 +109,7 @@ No terrain, cave, structure or biome generator is copied or replaced. This estab
 
 `net.minecraft.client.gui.worldsettings.WorldTypeButtonComponent.buttonClicked(IIIIIII)V` reads this list for its selector. Its labels append `.name` and `.desc` to `WorldType.getLanguageKey()`. No GUI injection is needed.
 
-`net.minecraft.core.lang.Language` has a protected final `Properties entries` and two constructors, with either `ZipFile` or `File` as the last parameter. The client language Mixin adds only the two mod-specific fallback entries at constructor return; existing translations win. No unrelated language files are replaced.
+`net.minecraft.core.lang.Language` has a protected final `Properties entries` and two constructors, with either `ZipFile` or `File` as the last parameter. Crucially, `Language.Default.<init>()V` clears these entries after the superclass constructor and then loads native namespaces. Injecting into the superclass constructor loses the mod's entries in the default language. The client language Mixin instead targets `Language.Default.<init>()V` at RETURN and uses its public `getEntries()Ljava/util/Properties;` to add `worldType.realseasons.name=Real Seasons` and the description fallback. Other languages fall back to `Language.Default.translateKey(String)`. Existing translations win. Verified against the cached BTA 8.0.1 merged JAR with `javap -p -c`; no unrelated language files are replaced.
 
 ## Persistence
 

@@ -4,7 +4,8 @@ plugins {
 }
 
 group = "dev.realseasons"
-version = "${providers.gradleProperty("mod_version").get()}+8.0.1"
+val modVersion = providers.gradleProperty("mod_version").get()
+version = "${modVersion}+8.0.1"
 base.archivesName = "real-seasons"
 
 loom {
@@ -37,8 +38,12 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 tasks.processResources {
-    inputs.property("version", project.version)
-    filesMatching("fabric.mod.json") { expand("version" to project.version) }
+    inputs.property("version", modVersion)
+    filesMatching("fabric.mod.json") { expand("version" to modVersion) }
+    from("resources/logo_256x256.png") {
+        into("assets/realseasons")
+        rename { "icon.png" }
+    }
 }
 
 // Keep executable regression checks separate from Loom's game-launch runtime.

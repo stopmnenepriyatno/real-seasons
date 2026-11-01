@@ -2,7 +2,7 @@
 
 A standalone Java 17 mod adding a **Real Seasons** selection to BTA's world type menu. It uses BTA's native seasonal system and the normal **default extended overworld** generator. No Mo' Creatures code, assets, HalpLibe or standard Fabric API is included or required.
 
-**Status:** compiled successfully; **893 regression checks passed**, including the game-day calendar cadence and current bytecode contracts. Not yet launched or tested in BTA; a successful build is not proof of working in-game behavior.
+**Status:** compiled successfully; **930 regression checks passed**, including the nightfall calendar cadence and bytecode contracts. Main and sources JARs regenerated for version **0.0.2**. Not yet launched or tested in BTA; a successful build alone is not proof of working in-game behavior.
 
 ## Behavior
 
@@ -13,9 +13,10 @@ A standalone Java 17 mod adding a **Real Seasons** selection to BTA's world type
 | June–August | Summer (`OVERWORLD_SUMMER`) |
 | September–November | Autumn (`OVERWORLD_FALL`) |
 
-- The host's `LocalDate` (system default timezone) is read once on world creation/load. Later checks compare `Math.floorDiv(worldTime, 24000L)` with the last observed game day: the same day or stopped world time causes no date reads.
-- Any changed game day triggers one date read and rebases the observed day, including sleep, forward multi-day skips and backwards time resets. Skipped days are not replayed. Host-date changes within the same game day wait until a day change or reload.
-- The season stays at its fixed native midpoint; game days and sleeping only resample the host date, never advance a separate season cycle. There is no gradual calendar-season blending.
+- The host's `LocalDate` (system default timezone) is read once on world creation/load. Later reads occur only during a new observed native night, from sunset to sunrise. BTA's season-dependent solar time determines nightfall, not a fixed tick such as `13000` or weather-darkened skies.
+- A world loaded at night does not reread the date that night. There are no further reads at dawn, during daytime, at frozen time or within an already checked night, including across tick `0`. Host-date edits wait for the next eligible night or reload.
+- Sleep or time skips landing in daytime wait for the next observed night: morning never applies a new date except on initial load. Multi-day or backwards jumps into another night read once; skipped nights are not replayed.
+- The season stays at its fixed native midpoint; date reads never advance a separate season cycle. There is no gradual calendar-season blending.
 - Day/night, sleep, weather progression, native plant mechanics and generation are not replaced. Seasonal effects are provided by BTA, not a cosmetic label.
 - Existing weather is allowed to finish normally; a month boundary does not forcibly start snow or rain. Snow, ice and vegetation follow BTA's normal update rules, not an instant whole-world rewrite.
 - Normal worlds retain their native `SeasonManagerCycle` or `SeasonManagerSingle`.
@@ -59,10 +60,10 @@ First-time builds may download Gradle/JDKs and dependencies from Gradle, Fabric,
 ## Architecture
 
 - `calendar/CalendarSeason`: pure month-to-season mapping.
-- `calendar/CalendarState`: initial game world time and an injectable date provider; one initial date read, then one read per observed game-day change, with effective-season change detection.
+- `calendar/CalendarState`: injectable date provider, initial world time and native-night predicate; one initial date read, then one per new observed night, with effective-season change detection.
 - `RealSeasonsWorldType`: inherits the standard extended `WorldTypeOverworld` generator and properties.
 - `CalendarSeasonManager`: native `SeasonManager` implementation using BTA's real `Seasons` objects; fixed-season semantics match `SeasonManagerSingle`.
-- Eight small Mixins: type registration, selection list, season factory, game-day checks at `World.updateSeasonAndLight()V` HEAD, remote-world marker, client payload handler, fallback labels and server heartbeat. No terrain, world-time, save-format, sleep or weather injections.
+- Eight small Mixins: type registration, selection list, season factory, nightfall checks at the unchanged `World.updateSeasonAndLight()V` HEAD hook, remote-world marker, client payload handler, fallback labels and server heartbeat. No terrain, world-time, save-format, sleep or weather injections.
 - `docs/BTA-8.0.1-HOOKS.md`: verified classes, descriptors, registration timing and save behavior.
 
 ### Multiplayer authority
@@ -85,18 +86,20 @@ Create that text file with an ISO local date, for example:
 2025-11-30
 ```
 
-While the world runs, change its contents to `2025-12-01`, then wait for the next Minecraft day, sleep across a day boundary, make a day-changing time skip, or reload the world. The next date read should switch native autumn to winter and notify the native renderer. Same-day file edits are not immediate: within-day time changes and frozen world time do not reread the file. Multi-day skips or backwards day resets cause one read, not one per skipped day; reload reads a fresh date. Use `2024-02-29` and `2024-03-01` for leap-year testing. An invalid/missing file retains the last valid date and logs a warning when read; if no valid test date has ever been read, the current local date is used.
+While the world runs, change its contents to `2025-12-01`, then wait for the next native sunset or reload the world. The next eligible date read should switch native autumn to winter and notify the native renderer. Editing during an already checked night does not apply again that night. Sleeping into morning, daytime skips and frozen world time do not apply edits; wait for the next observed night. A multi-day or backwards jump landing in another night samples once, without replaying skipped nights. Reload always reads a fresh date. Use `2024-02-29` and `2024-03-01` for leap-year testing. An invalid/missing file retains the last valid date and logs a warning when read; if no valid test date has ever been read, the current local date is used.
 
 In multiplayer only the **server's** override matters. Setting a different test file on a client must not change its received season. Remove the VM argument after testing; without it, only the real local calendar is used.
 
 ## Validation and limitations
 
-Executed successfully on the local Windows/JDK environment, in order:
+Both commands passed for the nightfall cadence, each reporting `PASS: 930 regression checks` and `BUILD SUCCESSFUL`:
 
-- `./gradlew.bat regressionTest --console=plain --offline` — **893 checks passed**.
-- `./gradlew.bat build --console=plain` — **BUILD SUCCESSFUL**, with **893 checks passed** and both main/sources JARs regenerated.
+- `./gradlew.bat regressionTest --console=plain --offline`
+- `./gradlew.bat build --console=plain`
 
-Coverage retains calendar mapping, leap years, month boundaries, timezone behavior and test-file handling. New checks cover initial mid-day reads, exact day boundaries and duplicate calls, no reads within a day or at frozen time, same-season day caching, sleep/multi-day skips, backwards rebasing and within-day rewinds, live date rollovers, fresh reload state, isolation, exactly 61 reads over 60 days, negative `floorDiv` and day indices beyond `int` range. ASM checks the current injection selector, tick call order and constructor initialization order; see [the validation checklist](docs/TESTING.md).
+The full build regenerated the main and sources JARs for **0.0.2** at the paths above.
+
+Coverage includes calendar mapping, leap years, month boundaries, timezone/file handling and the `nightChangesAndIsolation` / `seasonalNightBoundaries` tests: initial/reload nights, first-tick sunset detection, exact/duplicate sunsets, no dawn/daytime reads, nights spanning tick `0`, season-shifted sunsets, skips/rewinds, frozen time, isolation, 61 reads over 60 simulated days and negative/large night indices. ASM verifies the unchanged hook and call/constructor order, native `getTimeOfDay(World, long, float)` and its `getDayLengthTicks` call, and the manager's use of solar time rather than weather-darkening methods. Native noon and rendering behavior remain bytecode-inspected, not automatically runtime-tested; see [the validation checklist](docs/TESTING.md).
 
 Normal-world behavior, remote-client authority and the cached 20-tick heartbeat are unchanged and code-inspected only, not runtime-tested by this suite.
 

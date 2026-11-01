@@ -27,7 +27,9 @@ net.minecraft.core.world.season.SeasonManager.fromConfig
 
 The factory normally creates `SeasonManagerCycle` or `SeasonManagerSingle`. Real Seasons intercepts only this factory for `RealSeasonsWorldType`. It does not rewrite the final world field or affect the factory result for any other type.
 
-`World.getWorldTime()J` reads `LevelData`, which is initialized before `SeasonManager.fromConfig` in the constructor. This lets the calendar manager seed `CalendarState` with the initial game world time and an injectable date provider. An authoritative world reads the host `LocalDate` once on creation/load; a remote client never reads its own date.
+`World.getWorldTime()J` reads `LevelData`, which is initialized before `SeasonManager.fromConfig` in the constructor. The calendar manager creates `CalendarState(dateSource, initialWorldTime, LongPredicate nights)`. An authoritative world reads the host `LocalDate` once on creation/load; a remote client never reads its own date.
+
+The night predicate is evaluated lazily on the first tick, not during construction: the world's season manager is not installed while its constructor is running. A night already in progress at creation/load is marked checked to avoid a duplicate date read.
 
 Verified abstract methods of `SeasonManager`:
 
@@ -53,7 +55,26 @@ Native constants in `net.minecraft.core.world.season.Seasons`:
 
 `World.tick()V` is inherited by singleplayer `net.minecraft.client.world.WorldClient`. The override in `net.minecraft.server.world.WorldServer.tick()V` calls `World.tick()V`. Inspection with `javap` of the cached actual BTA 8.0.1 `minecraft-merged-deobf` JAR confirms that `World.tick()V` calls `World.updateSeasonAndLight()V` after `updateSleepingPlayers` and the world-time increment via `LevelData.setWorldTime`.
 
-The common `WorldMixin` injection targets HEAD of `updateSeasonAndLight()V`, replacing the former `tick()V` HEAD poll. It observes the post-sleep, post-increment world time and compares `Math.floorDiv(worldTime, 24000L)` to the last observed day. Same-day calls and stopped world time cause zero date reads. Any changed day, including a forward multi-day skip or backwards reset, causes one read and rebases the observed day; skipped days are not replayed. Host-date changes within a game day wait for a day change or reload.
+The common `WorldMixin` injection remains at HEAD of `updateSeasonAndLight()V`. It observes post-sleep, post-increment world time. A later date read requires both native nighttime and a night index different from the last checked night:
+
+```java
+Math.floorDiv(worldTime, 24000L)
+    - (Math.floorMod(worldTime, 24000L) < 6000L ? 1L : 0L)
+```
+
+Native solar noon is always tick `6000`, with period `24000`. Anchoring the index at noon keeps one night together across tick `0` and prevents a second read if changing seasons moves sunset. Dawn, daytime, frozen time and an already checked night cause no further reads. Sleep/skips landing in daytime wait for the next observed night, so morning does not apply date changes except on initial load. Multi-day or backwards jumps into another night sample once; skipped nights are not replayed.
+
+### Native night detection
+
+Verified with `javap -p -c` against the cached merged-deobf BTA 8.0.1 JAR:
+
+```text
+net.minecraft.core.world.type.WorldType.getTimeOfDay
+(Lnet/minecraft/core/world/World;JF)F
+net.minecraft.core.world.World.isDaytime()Z
+```
+
+The predicate calls `world.getWorldType().getTimeOfDay(world, time, 0.0F)` and treats `>= 0.25F && < 0.75F` as night (sunset inclusive, sunrise exclusive). `WorldType.getTimeOfDay` remaps day/night lengths using `Season.dayLength`; nightfall is not a fixed tick such as `13000`. `WorldTypeOverworld.getCelestialAngle` delegates to this solar-time method. In contrast, `WorldTypeOverworld.getSkyDarken` adds weather darkening, and `World.isDaytime()` compares `skyDarken < 4`. The calendar therefore does not use `World.isDaytime()` or weather as its night boundary.
 
 Native `World.updateSeasonAndLight()V` detects day changes using world time divided by `24000` and normally calls public `World.allChanged(ZZ)V` with its second argument true when the in-game day changes. Calendar manager changes use `allChanged(false, true)` without falsifying the day counter or world time. This notifies native level listeners that seasonal rendering needs rebuilding. Normal-world season managers remain unchanged.
 
@@ -125,8 +146,8 @@ Before the first server payload, the remote manager uses a deterministic spring 
 
 ## Verification boundaries
 
-`./gradlew.bat regressionTest --console=plain --offline` and then `./gradlew.bat build --console=plain` both passed with **893 regression checks**; the full build regenerated the main and sources JARs. Calendar mapping and game-day cadence checks passed; see [TESTING.md](TESTING.md) for coverage.
+`./gradlew.bat regressionTest --console=plain --offline` and then `./gradlew.bat build --console=plain` both reported `PASS: 930 regression checks` and `BUILD SUCCESSFUL`. The full build regenerated the main and sources JARs for version **0.0.2**. The `nightChangesAndIsolation` and `seasonalNightBoundaries` tests cover initial/reload nights, sunset boundaries, no duplicate reads across tick `0` or season-shifted sunsets, daytime skips, other-night jumps, rewinds, frozen time and isolation; see [TESTING.md](TESTING.md) for coverage.
 
-ASM checks against actual BTA 8.0.1 bytecode verify the current `WorldMixin` HEAD injection selector `updateSeasonAndLight()V` exists, the `World.tick` order `updateSleepingPlayers` → `LevelData.setWorldTime` → `updateSeasonAndLight`, and initialization of `LevelData` before `SeasonManager.fromConfig`. Injection selectors and shadow fields are checked without initializing the game.
+ASM verifies the unchanged `WorldMixin` HEAD selector `updateSeasonAndLight()V`, the `World.tick` order `updateSleepingPlayers` → `LevelData.setWorldTime` → `updateSeasonAndLight`, `LevelData` initialization before `SeasonManager.fromConfig`, and injection selectors/shadow fields. It also verifies `WorldType.getTimeOfDay(Lnet/minecraft/core/world/World;JF)F` exists and calls `getDayLengthTicks`, and that the calendar manager calls native `getTimeOfDay`, not `isDaytime` or `getSkyDarken`. This does not automatically test all native solar/rendering behavior: solar-noon invariance and the celestial-angle/sky-darkening findings above remain `javap` bytecode-inspection results only.
 
 Normal-world runtime behavior, remote-client authority and the cached 20-tick heartbeat are unchanged and code-inspected only, not automated runtime passes. Neither ASM nor `javap` inspection applies Mixins or launches the game. Actual Mixin application, save/reload, climate effects, renderer rebuilding, weather, sleep, terrain equivalence and multiplayer remain untested in BTA.

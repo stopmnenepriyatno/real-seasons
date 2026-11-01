@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.realseasons.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "WorldTypesMixin",
+    "WorldTypeGroupsMixin",
+    "SeasonManagerMixin",
+    "WorldMixin"
+  ],
+  "client": [
+    "client.RemoteWorldMixin",
+    "client.PacketHandlerClientMixin",
+    "client.LanguageMixin"
+  ],
+  "server": ["server.WorldServerMixin"],
+  "injectors": { "defaultRequire": 1 }
+}

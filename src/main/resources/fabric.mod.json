@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "realseasons",
+  "version": "${version}",
+  "name": "Real Seasons",
+  "description": "Native BTA seasons synchronized with the host's local calendar in a separate world type.",
+  "environment": "*",
+  "entrypoints": { "main": ["dev.realseasons.RealSeasons"] },
+  "mixins": ["realseasons.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.18.4-bta.11",
+    "minecraft": "8.0.1",
+    "java": ">=17"
+  }
+}

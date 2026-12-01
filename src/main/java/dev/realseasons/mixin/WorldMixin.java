@@ -9,7 +9,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(value = World.class, remap = false)
 public abstract class WorldMixin {
-    @Inject(method = "tick()V", at = @At("HEAD"))
+    @Inject(method = "updateSeasonAndLight()V", at = @At("HEAD"))
     private void realSeasons$checkCalendar(CallbackInfo ci) {
         World world = (World) (Object) this;
         if (world.getSeasonManager() instanceof CalendarSeasonManager calendar) {

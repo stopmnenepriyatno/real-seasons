@@ -21,10 +21,10 @@ public final class RegressionTests {
 
     public static void main(String[] args) throws Exception {
         calendarMapping();
-        pollingAndIsolation();
+        dayChangesAndIsolation();
         dateFile();
         verifiedGameHooks();
-        System.out.println("PASS: " + checks + " regression checks (calendar, polling, isolation, date file, BTA bytecode contracts).");
+        System.out.println("PASS: " + checks + " regression checks (calendar, game-day changes, isolation, date file, BTA bytecode contracts).");
         System.out.println("These checks do not launch Minecraft or apply Mixins; in-game validation remains required.");
     }
 
@@ -52,43 +52,86 @@ public final class RegressionTests {
         }
         check(CalendarSeason.fromDate(LocalDate.of(2024, 2, 29)) == CalendarSeason.WINTER, "Leap day");
         Instant boundary = Instant.parse("2025-03-01T00:30:00Z");
-        check(new CalendarState(Clock.fixed(boundary, ZoneOffset.UTC)).season() == CalendarSeason.SPRING, "UTC date");
-        check(new CalendarState(Clock.fixed(boundary, ZoneId.of("America/Los_Angeles"))).season() == CalendarSeason.WINTER,
+        check(new CalendarState(Clock.fixed(boundary, ZoneOffset.UTC), 0).season() == CalendarSeason.SPRING, "UTC date");
+        check(new CalendarState(Clock.fixed(boundary, ZoneId.of("America/Los_Angeles")), 0).season() == CalendarSeason.WINTER,
                 "Must use clock's local timezone, not UTC");
     }
 
-    private static void pollingAndIsolation() {
+    private static void dayChangesAndIsolation() {
         AtomicReference<LocalDate> date = new AtomicReference<>(LocalDate.of(2025, 11, 30));
         AtomicInteger reads = new AtomicInteger();
-        CalendarState state = new CalendarState(() -> { reads.incrementAndGet(); return date.get(); });
-        check(state.season() == CalendarSeason.AUTUMN && reads.get() == 1, "Initial date read");
+        Supplier<LocalDate> source = () -> { reads.incrementAndGet(); return date.get(); };
+        CalendarState state = new CalendarState(source, 12000);
+        check(state.season() == CalendarSeason.AUTUMN && reads.get() == 1, "Initial mid-day date read");
         date.set(LocalDate.of(2025, 12, 1));
-        for (int i = 0; i < 19; i++) check(!state.tick(), "Do not check before 20 ticks");
-        check(reads.get() == 1 && state.season() == CalendarSeason.AUTUMN, "Polling is bounded");
-        check(state.tick() && state.season() == CalendarSeason.WINTER && reads.get() == 2, "Live Nov/Dec rollover");
-        date.set(LocalDate.of(2026, 2, 28));
-        for (int i = 0; i < 20; i++) check(!state.tick(), "No effective season change within winter");
-        date.set(LocalDate.of(2026, 3, 1));
-        for (int i = 0; i < 19; i++) state.tick();
-        check(state.tick() && state.season() == CalendarSeason.SPRING, "Live Feb/Mar rollover");
-        date.set(LocalDate.of(2024, 2, 29));
-        for (int i = 0; i < 19; i++) state.tick();
-        check(state.tick() && state.season() == CalendarSeason.WINTER, "Backwards date changes");
-        CalendarState other = new CalendarState(Clock.fixed(Instant.parse("2025-07-01T12:00:00Z"), ZoneOffset.UTC));
-        check(other.season() == CalendarSeason.SUMMER && state.season() == CalendarSeason.WINTER, "World state isolation");
-        for (int i = 0; i < 24000 * 60; i++) {
-            if (state.tick()) throw new AssertionError("Game ticks advanced a fixed calendar season");
+        for (long time = 12000; time < 24000; time++) {
+            if (state.tick(time)) throw new AssertionError("Checked date within the same game day");
         }
-        check(state.season() == CalendarSeason.WINTER, "60 game days cannot advance the calendar");
+        check(reads.get() == 1 && state.season() == CalendarSeason.AUTUMN, "Real midnight waits for next game day");
+        check(state.tick(24000) && state.season() == CalendarSeason.WINTER && reads.get() == 2, "Exact game-day boundary");
+        check(!state.tick(24000) && reads.get() == 2, "Repeated boundary does not reread date");
+        for (long time = 24001; time < 48000; time++) {
+            if (state.tick(time)) throw new AssertionError("Unexpected change inside a game day");
+        }
+        check(reads.get() == 2, "No calendar reads during an entire game day");
+        date.set(LocalDate.of(2026, 2, 28));
+        check(!state.tick(48000) && reads.get() == 3, "Read once even if effective season is unchanged");
+        check(!state.tick(48001) && reads.get() == 3, "Unchanged season still records the checked day");
+        date.set(LocalDate.of(2026, 3, 1));
+        check(state.tick(72000) && state.season() == CalendarSeason.SPRING && reads.get() == 4, "Live Feb/Mar rollover");
+        date.set(LocalDate.of(2024, 2, 29));
+        check(state.tick(96000) && state.season() == CalendarSeason.WINTER && reads.get() == 5, "Backwards real-date change");
+        date.set(LocalDate.of(2025, 5, 31));
+        check(state.tick(126000) && state.season() == CalendarSeason.SPRING && reads.get() == 6, "Sleep skips past exact boundary");
+        date.set(LocalDate.of(2025, 6, 1));
+        check(state.tick(2400000 + 6000) && state.season() == CalendarSeason.SUMMER && reads.get() == 7,
+                "Multi-day skip reads current date once, without replaying skipped days");
+        date.set(LocalDate.of(2025, 9, 1));
+        check(state.tick(48000 + 6000) && state.season() == CalendarSeason.AUTUMN && reads.get() == 8,
+                "Backwards time skip checks date and rebases day tracking");
+        date.set(LocalDate.of(2025, 12, 1));
+        check(!state.tick(48000 + 1000) && reads.get() == 8, "Backwards skip within the same day does not reread");
+        check(state.tick(72000) && state.season() == CalendarSeason.WINTER && reads.get() == 9,
+                "Next day after backwards skip is not blocked by old day number");
+        for (int i = 0; i < 24000; i++) {
+            if (state.tick(72000)) throw new AssertionError("Frozen game time changed the season");
+        }
+        check(reads.get() == 9, "Frozen game time never rereads date");
+        CalendarState other = new CalendarState(Clock.fixed(Instant.parse("2025-07-01T12:00:00Z"), ZoneOffset.UTC), 72000);
+        check(other.season() == CalendarSeason.SUMMER && state.season() == CalendarSeason.WINTER, "World state isolation");
+        date.set(LocalDate.of(2025, 9, 1));
+        CalendarState reloaded = new CalendarState(source, 72000);
+        check(reloaded.season() == CalendarSeason.AUTUMN && reads.get() == 10, "Reload reads fresh date even on the same game day");
+        check(!reloaded.tick(72001) && reads.get() == 10, "First tick after loading does not duplicate initial read");
+        check(state.season() == CalendarSeason.WINTER, "Reload does not alter another world's state");
+
+        AtomicInteger fixedReads = new AtomicInteger();
+        CalendarState fixed = new CalendarState(() -> { fixedReads.incrementAndGet(); return LocalDate.of(2024, 2, 29); }, 0);
+        for (long time = 1; time <= 24000 * 60; time++) {
+            if (fixed.tick(time)) throw new AssertionError("Game ticks advanced a fixed calendar season");
+        }
+        check(fixed.season() == CalendarSeason.WINTER && fixedReads.get() == 61, "60 game days: one read per day, fixed real season");
         for (int month = 1; month <= 12; month++) {
             AtomicReference<LocalDate> d = new AtomicReference<>(YearMonth.of(2024, month).atEndOfMonth());
-            CalendarState s = new CalendarState(d::get);
+            CalendarState s = new CalendarState(d::get, 23998);
             CalendarSeason old = s.season();
             d.set(d.get().plusDays(1));
-            for (int i = 0; i < 19; i++) check(!s.tick(), "Boundary polling interval");
-            check(s.tick() == (old != CalendarSeason.fromDate(d.get())), "Boundary effective change " + month);
+            check(!s.tick(23999), "Month boundary waits for game day");
+            check(s.tick(24000) == (old != CalendarSeason.fromDate(d.get())), "Boundary effective change " + month);
             check(s.season() == CalendarSeason.fromDate(d.get()), "Live boundary " + month);
         }
+
+        AtomicInteger negativeReads = new AtomicInteger();
+        CalendarState negative = new CalendarState(() -> { negativeReads.incrementAndGet(); return date.get(); }, 0);
+        date.set(LocalDate.of(2025, 12, 1));
+        check(negative.tick(-1) && negativeReads.get() == 2, "Negative time belongs to previous day");
+        check(!negative.tick(-24000) && negativeReads.get() == 2, "Negative day uses floor division");
+        check(!negative.tick(-24001) && negativeReads.get() == 3, "Negative day boundary reads once");
+        check(!negative.tick(0) && negativeReads.get() == 4, "Return from negative time rebases tracking");
+        long distantDay = 24000L * Integer.MAX_VALUE;
+        CalendarState distant = new CalendarState(source, distantDay);
+        date.set(LocalDate.of(2025, 6, 1));
+        check(distant.tick(distantDay + 24000) && distant.season() == CalendarSeason.SUMMER, "Day number does not overflow int");
     }
 
     private static void dateFile() throws Exception {
@@ -98,11 +141,11 @@ public final class RegressionTests {
             Files.writeString(file, "2025-11-30\n");
             System.setProperty("realseasons.testDateFile", file.toString());
             Supplier<LocalDate> source = CalendarDateSource.create();
-            CalendarState state = new CalendarState(source);
+            CalendarState state = new CalendarState(source, 12000);
             check(state.season() == CalendarSeason.AUTUMN, "Read test date file");
             Files.writeString(file, "2025-12-01\n");
-            for (int i = 0; i < 19; i++) state.tick();
-            check(state.tick() && state.season() == CalendarSeason.WINTER, "Live file update");
+            check(!state.tick(23999) && state.season() == CalendarSeason.AUTUMN, "File edit waits for game-day boundary");
+            check(state.tick(24000) && state.season() == CalendarSeason.WINTER, "Live file update on next game day");
             Files.writeString(file, "not-a-date");
             check(source.get().equals(LocalDate.of(2025, 12, 1)), "Invalid file keeps last valid date");
             Files.delete(file);
@@ -186,6 +229,30 @@ public final class RegressionTests {
             }
             check(key, "Native WorldType persistence key: " + name);
         }
+        ClassNode world = node("net/minecraft/core/world/World");
+        check(world.methods.stream().anyMatch(m -> m.name.equals("getWorldTime") && m.desc.equals("()J")),
+                "Verified world-time getter");
+        MethodNode worldTick = world.methods.stream().filter(m -> m.name.equals("tick") && m.desc.equals("()V")).findFirst().orElseThrow();
+        int sleepIndex = -1, timeIndex = -1, seasonIndex = -1;
+        for (int i = 0; i < worldTick.instructions.size(); i++) {
+            if (worldTick.instructions.get(i) instanceof MethodInsnNode call) {
+                if (call.name.equals("updateSleepingPlayers")) sleepIndex = i;
+                if (call.owner.equals("net/minecraft/core/world/save/LevelData") && call.name.equals("setWorldTime")) timeIndex = i;
+                if (call.name.equals("updateSeasonAndLight")) seasonIndex = i;
+            }
+        }
+        check(sleepIndex >= 0 && timeIndex > sleepIndex && seasonIndex > timeIndex,
+                "Calendar hook runs after sleep and game-time advancement");
+        MethodNode constructor = world.methods.stream().filter(m -> m.name.equals("<init>")
+                && m.desc.endsWith("Lnet/minecraft/core/world/save/DimensionData;)V")).findFirst().orElseThrow();
+        int levelDataIndex = -1, factoryIndex = -1;
+        for (int i = 0; i < constructor.instructions.size(); i++) {
+            AbstractInsnNode insn = constructor.instructions.get(i);
+            if (insn instanceof FieldInsnNode field && field.getOpcode() == Opcodes.PUTFIELD && field.name.equals("levelData")) levelDataIndex = i;
+            if (insn instanceof MethodInsnNode call && call.owner.equals("net/minecraft/core/world/season/SeasonManager")
+                    && call.name.equals("fromConfig")) factoryIndex = i;
+        }
+        check(levelDataIndex >= 0 && factoryIndex > levelDataIndex, "Initial game time is available when creating the calendar manager");
         ClassNode server = node("net/minecraft/server/world/WorldServer");
         MethodNode tick = server.methods.stream().filter(m -> m.name.equals("tick") && m.desc.equals("()V")).findFirst().orElseThrow();
         boolean superTick = false;

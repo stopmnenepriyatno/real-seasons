@@ -18,12 +18,12 @@ public final class CalendarSeasonManager extends SeasonManager {
         // isClientSide is assigned AFTER the World superclass constructor in BTA.
         // A marker is therefore necessary to avoid ever consulting a remote client's clock.
         boolean remote = world instanceof RemoteCalendarWorld;
-        calendar = remote ? null : new CalendarState(CalendarDateSource.create());
+        calendar = remote ? null : new CalendarState(CalendarDateSource.create(), world.getWorldTime());
         current = remote ? CalendarSeason.SPRING : calendar.season();
     }
 
     public void tickCalendar() {
-        if (calendar != null && calendar.tick()) setSeason(calendar.season());
+        if (calendar != null && calendar.tick(world.getWorldTime())) setSeason(calendar.season());
     }
 
     public CalendarSeason calendarSeason() {

@@ -27,6 +27,8 @@ net.minecraft.core.world.season.SeasonManager.fromConfig
 
 The factory normally creates `SeasonManagerCycle` or `SeasonManagerSingle`. Real Seasons intercepts only this factory for `RealSeasonsWorldType`. It does not rewrite the final world field or affect the factory result for any other type.
 
+`World.getWorldTime()J` reads `LevelData`, which is initialized before `SeasonManager.fromConfig` in the constructor. This lets the calendar manager seed `CalendarState` with the initial game world time and an injectable date provider. An authoritative world reads the host `LocalDate` once on creation/load; a remote client never reads its own date.
+
 Verified abstract methods of `SeasonManager`:
 
 ```text
@@ -49,9 +51,11 @@ Native constants in `net.minecraft.core.world.season.Seasons`:
 
 `SeasonManagerCycle` derives season and progress from world time. Calendar worlds bypass it entirely. World time, sleep and weather duration are not rewritten.
 
-`World.tick()V` is inherited by singleplayer `net.minecraft.client.world.WorldClient`. The override in `net.minecraft.server.world.WorldServer.tick()V` calls `World.tick()V`. The common HEAD injection advances a per-world 20-tick poll counter.
+`World.tick()V` is inherited by singleplayer `net.minecraft.client.world.WorldClient`. The override in `net.minecraft.server.world.WorldServer.tick()V` calls `World.tick()V`. Inspection with `javap` of the cached actual BTA 8.0.1 `minecraft-merged-deobf` JAR confirms that `World.tick()V` calls `World.updateSeasonAndLight()V` after `updateSleepingPlayers` and the world-time increment via `LevelData.setWorldTime`.
 
-`World.updateSeasonAndLight()V` normally calls public `World.allChanged(ZZ)V` with its second argument true when the in-game day changes. Calendar manager changes use `allChanged(false, true)` without falsifying the day counter or world time. This notifies native level listeners that seasonal rendering needs rebuilding.
+The common `WorldMixin` injection targets HEAD of `updateSeasonAndLight()V`, replacing the former `tick()V` HEAD poll. It observes the post-sleep, post-increment world time and compares `Math.floorDiv(worldTime, 24000L)` to the last observed day. Same-day calls and stopped world time cause zero date reads. Any changed day, including a forward multi-day skip or backwards reset, causes one read and rebases the observed day; skipped days are not replayed. Host-date changes within a game day wait for a day change or reload.
+
+Native `World.updateSeasonAndLight()V` detects day changes using world time divided by `24000` and normally calls public `World.allChanged(ZZ)V` with its second argument true when the in-game day changes. Calendar manager changes use `allChanged(false, true)` without falsifying the day counter or world time. This notifies native level listeners that seasonal rendering needs rebuilding. Normal-world season managers remain unchanged.
 
 `net.minecraft.core.world.weather.WeatherManager.tick()Z` reads `world.getSeasonManager().getCurrentSeason()` and that native season's `allowedWeathers` and `weatherProbability`. Those native paths remain intact. An existing weather event is not forcibly cancelled at a month boundary.
 
@@ -115,10 +119,14 @@ Native login/respawn packets carry numeric registry world type IDs. The client h
 
 `WorldClientMP.isClientSide` is assigned after the superclass constructor. The remote-world marker Mixin is already visible to `instanceof` during that constructor, so its calendar manager never reads the client's date, including during world construction.
 
-Channel `RealSeasons:Sync` carries protocol version 1 and one season byte. The server sends a two-byte heartbeat every 20 ticks in calendar worlds, covering joins and dimension re-entry. Clients reject malformed payloads and apply valid state only to their active calendar manager. No server-side handler accepts a client's season.
+Channel `RealSeasons:Sync` carries protocol version 1 and one season byte. The server sends a two-byte heartbeat every 20 ticks in calendar worlds, covering joins and dimension re-entry. This cadence is unchanged: the heartbeat sends cached state and does not read the calendar, even if world time is stopped. Clients reject malformed payloads and apply valid state only to their active calendar manager. No server-side handler accepts a client's season.
 
 Before the first server payload, the remote manager uses a deterministic spring placeholder, never the client's clock. Multiplayer behavior, registry compatibility with other mods and the initial handshake remain unverified in an actual game session.
 
 ## Verification boundaries
 
-The executable regression suite checks all injection selectors and shadow fields against the actual game bytecode without initializing the game. This is not a Mixin transformation/launch test. Actual Mixin application, save/reload, climate effects, renderer rebuilding, weather, sleep, terrain equivalence and multiplayer must still be tested in BTA.
+`./gradlew.bat regressionTest --console=plain --offline` and then `./gradlew.bat build --console=plain` both passed with **893 regression checks**; the full build regenerated the main and sources JARs. Calendar mapping and game-day cadence checks passed; see [TESTING.md](TESTING.md) for coverage.
+
+ASM checks against actual BTA 8.0.1 bytecode verify the current `WorldMixin` HEAD injection selector `updateSeasonAndLight()V` exists, the `World.tick` order `updateSleepingPlayers` → `LevelData.setWorldTime` → `updateSeasonAndLight`, and initialization of `LevelData` before `SeasonManager.fromConfig`. Injection selectors and shadow fields are checked without initializing the game.
+
+Normal-world runtime behavior, remote-client authority and the cached 20-tick heartbeat are unchanged and code-inspected only, not automated runtime passes. Neither ASM nor `javap` inspection applies Mixins or launches the game. Actual Mixin application, save/reload, climate effects, renderer rebuilding, weather, sleep, terrain equivalence and multiplayer remain untested in BTA.
